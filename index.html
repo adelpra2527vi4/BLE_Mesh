@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 Mesh Controller</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #22263a;
+    --accent: #4f98a3; --accent-hover: #3a7a85;
+    --text: #e2e8f0; --muted: #64748b; --success: #6daa45;
+    --error: #dd6974; --warn: #e8af34;
+    --radius: 12px; --gap: 1rem;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif;
+         min-height: 100dvh; padding: 1.5rem; }
+  header { display: flex; align-items: center; justify-content: space-between;
+           margin-bottom: 2rem; }
+  h1 { font-size: 1.4rem; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted);
+         transition: background .3s; }
+  .dot.connected { background: var(--success); box-shadow: 0 0 8px var(--success); }
+
+  .card { background: var(--surface); border-radius: var(--radius);
+          padding: 1.25rem; margin-bottom: 1rem; }
+  .card h2 { font-size: .85rem; text-transform: uppercase; letter-spacing: .08em;
+             color: var(--muted); margin-bottom: 1rem; }
+
+  button { cursor: pointer; border: none; border-radius: 8px; font-size: .9rem;
+           font-weight: 500; padding: .6rem 1.2rem; transition: all .18s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-ghost { background: var(--surface2); color: var(--text); }
+  .btn-ghost:hover { background: #2d3250; }
+  .btn-danger { background: #7f1d1d; color: #fca5a5; }
+  .btn-danger:hover { background: #991b1b; }
+
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; }
+
+  /* Toggle ON/OFF */
+  .toggle-wrap { display: flex; align-items: center; gap: 1rem; }
+  .toggle { position: relative; width: 56px; height: 30px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--surface2);
+            border-radius: 30px; cursor: pointer; transition: .3s; }
+  .slider::before { content: ''; position: absolute; width: 22px; height: 22px;
+                    left: 4px; bottom: 4px; background: #fff; border-radius: 50%;
+                    transition: .3s; }
+  input:checked + .slider { background: var(--accent); }
+  input:checked + .slider::before { transform: translateX(26px); }
+
+  /* Device list */
+  .device-item { display: flex; align-items: center; justify-content: space-between;
+                 padding: .75rem; background: var(--surface2); border-radius: 8px;
+                 margin-bottom: .5rem; gap: .75rem; }
+  .device-addr { font-family: monospace; font-size: .9rem; color: var(--accent); }
+  .device-uuid { font-size: .75rem; color: var(--muted); margin-top: .2rem;
+                 font-family: monospace; word-break: break-all; }
+  .badge { font-size: .7rem; padding: .2rem .5rem; border-radius: 20px; }
+  .badge-ok { background: #1a3a12; color: var(--success); }
+  .badge-pending { background: #3a3010; color: var(--warn); }
+
+  #log { background: #0a0c12; border-radius: 8px; padding: 1rem;
+         font-family: monospace; font-size: .78rem; color: #94a3b8;
+         max-height: 160px; overflow-y: auto; line-height: 1.6; }
+  #log .ts { color: var(--muted); }
+  #log .ok { color: var(--success); }
+  #log .err { color: var(--error); }
+  #log .info { color: var(--accent); }
+
+  .addr-input { background: var(--surface2); border: 1px solid #2d3250;
+                color: var(--text); border-radius: 6px; padding: .5rem .75rem;
+                font-family: monospace; width: 100px; font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔷 ESP32 Mesh</h1>
+  <div style="display:flex;align-items:center;gap:.5rem">
+    <span id="conn-label" style="font-size:.8rem;color:var(--muted)">Disconnesso</span>
+    <div class="dot" id="dot"></div>
+  </div>
+</header>
+
+<!-- Connessione -->
+<div class="card">
+  <h2>Connessione BLE</h2>
+  <div class="row">
+    <button class="btn-primary" id="btn-connect">Connetti a ESP32-Mesh</button>
+    <button class="btn-ghost" id="btn-disconnect" disabled>Disconnetti</button>
+  </div>
+</div>
+
+<!-- Controllo diretto -->
+<div class="card">
+  <h2>Controllo rapido</h2>
+  <div class="toggle-wrap">
+    <span>Spegni</span>
+    <label class="toggle">
+      <input type="checkbox" id="main-toggle" onchange="sendOnOff(this.checked)">
+      <span class="slider"></span>
+    </label>
+    <span>Accendi</span>
+    <input class="addr-input" id="target-addr" value="0xC000"
+           placeholder="addr" title="Indirizzo mesh target (hex)">
+  </div>
+</div>
+
+<!-- Scan + Provisioning -->
+<div class="card">
+  <h2>Scan rete mesh</h2>
+  <div class="row" style="margin-bottom:1rem">
+    <button class="btn-ghost" id="btn-scan" onclick="startScan()">▶ Avvia scan</button>
+    <button class="btn-ghost" onclick="refreshDevices()">↻ Aggiorna lista</button>
+  </div>
+  <div id="device-list">
+    <p style="color:var(--muted);font-size:.85rem">Nessun dispositivo rilevato.</p>
+  </div>
+</div>
+
+<!-- Log -->
+<div class="card">
+  <h2>Log</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+// ── UUIDs (devono corrispondere al firmware) ──────────────────────────────────
+const SVC_UUID     = '12345678-1234-1234-1234-123456789abc';
+const ONOFF_UUID   = '12345678-1234-1234-1234-123456789a01';
+const DEVLIST_UUID = '12345678-1234-1234-1234-123456789a02';
+const STATUS_UUID  = '12345678-1234-1234-1234-123456789a03';
+
+let device, server, svc;
+let charOnOff, charDevList, charStatus;
+let devices = [];
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+function log(msg, type = '') {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString('it-IT', {hour12:false});
+  el.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${type}">${msg}</span></div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Connessione ───────────────────────────────────────────────────────────────
+async function connect() {
+  try {
+    log('Ricerca dispositivi BLE...', 'info');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'ESP32-Mesh' }],
+      optionalServices: [SVC_UUID]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    server = await device.gatt.connect();
+    svc    = await server.getPrimaryService(SVC_UUID);
+
+    charOnOff   = await svc.getCharacteristic(ONOFF_UUID);
+    charDevList = await svc.getCharacteristic(DEVLIST_UUID);
+    charStatus  = await svc.getCharacteristic(STATUS_UUID);
+
+    // Notifiche STATUS
+    await charStatus.startNotifications();
+    charStatus.addEventListener('characteristicvaluechanged', onStatus);
+
+    // Notifiche DEVLIST
+    await charDevList.startNotifications();
+    charDevList.addEventListener('characteristicvaluechanged', onDevListNotify);
+
+    setConnected(true);
+    log('Connesso a ' + device.name, 'ok');
+    readDevList();
+  } catch(e) {
+    log('Errore connessione: ' + e.message, 'err');
+  }
+}
+
+function onDisconnected() {
+  setConnected(false);
+  log('Disconnesso', 'err');
+}
+
+async function disconnect() {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+}
+
+function setConnected(v) {
+  document.getElementById('dot').classList.toggle('connected', v);
+  document.getElementById('conn-label').textContent = v ? 'Connesso' : 'Disconnesso';
+  document.getElementById('btn-connect').disabled    = v;
+  document.getElementById('btn-disconnect').disabled = !v;
+  document.getElementById('main-toggle').disabled    = !v;
+  document.getElementById('btn-scan').disabled       = !v;
+  document.getElementById('target-addr').disabled    = !v;
+}
+
+// ── Comandi ───────────────────────────────────────────────────────────────────
+async function sendOnOff(state) {
+  if (!charOnOff) return;
+  const addrStr = document.getElementById('target-addr').value;
+  const addr    = parseInt(addrStr, 16);
+  if (isNaN(addr)) { log('Indirizzo non valido', 'err'); return; }
+  // Pacchetto: [0x01][addr_lo][addr_hi][state]
+  const pkt = new Uint8Array([0x01, addr & 0xFF, (addr >> 8) & 0xFF, state ? 1 : 0]);
+  try {
+    await charOnOff.writeValueWithoutResponse(pkt);
+    log(`Inviato ${state ? 'ON' : 'OFF'} → 0x${addr.toString(16).toUpperCase()}`, 'ok');
+  } catch(e) {
+    log('Errore invio: ' + e.message, 'err');
+  }
+}
+
+async function startScan() {
+  if (!charOnOff) return;
+  // Pacchetto: [0x03] → avvia scan
+  const pkt = new Uint8Array([0x03]);
+  await charOnOff.writeValueWithoutResponse(pkt);
+  log('Scan mesh avviato', 'info');
+}
+
+async function provisionDevice(uuid) {
+  if (!charOnOff) return;
+  // Pacchetto: [0x02][uuid:16]
+  const pkt = new Uint8Array(17);
+  pkt[0] = 0x02;
+  for (let i = 0; i < 16; i++) pkt[i+1] = uuid[i];
+  await charOnOff.writeValueWithoutResponse(pkt);
+  log('Richiesta provisioning inviata', 'info');
+}
+
+async function refreshDevices() {
+  if (!charDevList) return;
+  const val = await charDevList.readValue();
+  parseDevList(val);
+}
+
+// ── Parsing device list ───────────────────────────────────────────────────────
+// Formato: [count:1][addr_lo:1][addr_hi:1][uuid:16] x N
+function parseDevList(dataView) {
+  const buf = new Uint8Array(dataView.buffer);
+  const count = buf[0];
+  devices = [];
+  let pos = 1;
+  for (let i = 0; i < count && pos+18 <= buf.length; i++) {
+    const addr = buf[pos] | (buf[pos+1] << 8); pos += 2;
+    const uuid = Array.from(buf.slice(pos, pos+16)); pos += 16;
+    devices.push({ addr, uuid, provisioned: addr !== 0 });
+  }
+  renderDevices();
+}
+
+function onDevListNotify(e) { parseDevList(e.target.value); }
+
+function onStatus(e) {
+  const msg = new TextDecoder().decode(e.target.value.buffer);
+  log('Status: ' + msg, msg.startsWith('PROV') ? 'ok' : 'info');
+  if (msg.startsWith('PROV')) refreshDevices();
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function uuidToString(arr) {
+  return arr.slice(0,4).map(b=>b.toString(16).padStart(2,'0')).join('')
+    + '-' + arr.slice(4,6).map(b=>b.toString(16).padStart(2,'0')).join('')
+    + '-' + arr.slice(6,8).map(b=>b.toString(16).padStart(2,'0')).join('')
+    + '-' + arr.slice(8,10).map(b=>b.toString(16).padStart(2,'0')).join('')
+    + '-' + arr.slice(10).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function renderDevices() {
+  const el = document.getElementById('device-list');
+  if (devices.length === 0) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:.85rem">Nessun dispositivo.</p>';
+    return;
+  }
+  el.innerHTML = devices.map((d,i) => `
+    <div class="device-item">
+      <div>
+        <div class="device-addr">${d.provisioned ? '0x'+d.addr.toString(16).toUpperCase().padStart(4,'0') : '—'}</div>
+        <div class="device-uuid">${uuidToString(d.uuid)}</div>
+      </div>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <span class="badge ${d.provisioned?'badge-ok':'badge-pending'}">${d.provisioned?'✓ Provisionato':'Non provisionato'}</span>
+        ${!d.provisioned ? `<button class="btn-primary" style="font-size:.8rem;padding:.4rem .8rem"
+          onclick="provisionDevice(${JSON.stringify(d.uuid)})">Provisiona</button>` : ''}
+        ${d.provisioned ? `
+          <button class="btn-ghost" style="font-size:.8rem;padding:.4rem .8rem"
+            onclick="sendOnOffDirect(0x${d.addr.toString(16)},true)">ON</button>
+          <button class="btn-danger" style="font-size:.8rem;padding:.4rem .8rem"
+            onclick="sendOnOffDirect(0x${d.addr.toString(16)},false)">OFF</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function sendOnOffDirect(addr, state) {
+  if (!charOnOff) return;
+  const pkt = new Uint8Array([0x01, addr & 0xFF, (addr >> 8) & 0xFF, state ? 1 : 0]);
+  await charOnOff.writeValueWithoutResponse(pkt);
+  log(`Diretto ${state?'ON':'OFF'} → 0x${addr.toString(16).toUpperCase()}`, 'ok');
+}
+
+// ── Bind bottoni ─────────────────────────────────────────────────────────────
+document.getElementById('btn-connect').addEventListener('click', connect);
+document.getElementById('btn-disconnect').addEventListener('click', disconnect);
+
+setConnected(false);
+log('App pronta. Clicca "Connetti" per iniziare.', 'info');
+</script>
+</body>
+</html>
